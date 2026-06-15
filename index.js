@@ -1,7 +1,3 @@
-require("dotenv").config();
-
-const OpenAI = require("openai");
-
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -9,20 +5,12 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const qrcode = require("qrcode-terminal");
-
-const client = new OpenAI({
-    apiKey: process.env.OPENROUTER_API_KEY,
-    baseURL: "https://openrouter.ai/api/v1",
-    defaultHeaders: {
-        "HTTP-Referer": "http://localhost:3000",
-        "X-Title": "WhatsApp Bot"
-    }
-});
+const axios = require("axios");
 
 async function startBot() {
 
     const { state, saveCreds } =
-        await useMultiFileAuthState("./auth");
+        await useMultiFileAuthState("auth");
 
     const sock = makeWASocket({
         auth: state,
@@ -31,16 +19,14 @@ async function startBot() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", async (update) => {
+    sock.ev.on("connection.update", (update) => {
 
-        const {
-            connection,
-            qr,
-            lastDisconnect
-        } = update;
+        const { connection, qr, lastDisconnect } = update;
 
         if (qr) {
-            qrcode.generate(qr, { small: true });
+            qrcode.generate(qr, {
+                small: true
+            });
         }
 
         if (connection === "open") {
@@ -49,17 +35,14 @@ async function startBot() {
 
         if (connection === "close") {
 
-            console.log("❌ Connection Closed");
-
             const shouldReconnect =
                 lastDisconnect?.error?.output?.statusCode !==
                 DisconnectReason.loggedOut;
 
+            console.log("❌ Connection Closed");
+
             if (shouldReconnect) {
-                console.log("🔄 Reconnecting...");
                 startBot();
-            } else {
-                console.log("Logged out");
             }
         }
     });
@@ -70,63 +53,60 @@ async function startBot() {
 
             const msg = messages[0];
 
+            if (!msg) return;
             if (!msg.message) return;
-
             if (msg.key.fromMe) return;
 
-            const sender = msg.key.remoteJid;
-
             const text =
-                msg.message.conversation ||
-                msg.message.extendedTextMessage?.text;
+                msg.message?.conversation ||
+                msg.message?.extendedTextMessage?.text;
 
             if (!text) return;
 
-            console.log(`📩 ${sender}: ${text}`);
-
-            await sock.sendPresenceUpdate(
-                "composing",
-                sender
+            const sender = msg.key.remoteJid;
+            const phone = msg.key.remoteJidAlt.split("@")[0];
+            const name =msg.pushName ||"Unknown";
+            
+            console.log("Name:", name);
+            console.log("Phone:", phone);
+            console.log("================================");
+            console.log("FROM :", sender);
+            console.log("TEXT :", text);
+            console.log("================================");
+            //console.log(JSON.stringify(msg, null, 2));
+            const response = await axios.post(
+                "http://localhost:8000/chat",
+                {
+                    user_id: sender,
+                    phone: phone,
+                    name: name,
+                    message: text
+                },
+                {
+                    timeout: 60000
+                }
             );
 
-            const completion =
-                await client.chat.completions.create({
-                    model: "openai/gpt-4o-mini",
-                    messages: [
-                        {
-                            role: "system",
-                            content:
-                                "You are a helpful WhatsApp assistant."
-                        },
-                        {
-                            role: "user",
-                            content: text
-                        }
-                    ]
-                });
-
             const reply =
-                completion.choices[0].message.content;
+                response.data.reply ||
+                "No response generated.";
 
             await sock.sendMessage(sender, {
                 text: reply
             });
 
-            console.log(`🤖 ${reply}`);
-
         } catch (err) {
 
-            console.error(err);
+            console.error("BOT ERROR:", err.message);
 
             try {
                 await sock.sendMessage(
                     messages[0].key.remoteJid,
                     {
-                        text:
-                            "Something went wrong. Please try again."
+                        text: "⚠️ AI server unavailable."
                     }
                 );
-            } catch {}
+            } catch (_) {}
         }
     });
 }
