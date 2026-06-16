@@ -1,72 +1,155 @@
-from typing import TypedDict
+from typing import TypedDict, Annotated, Optional
+from pydantic import BaseModel
+
 from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+
 from langchain_openai import ChatOpenAI
+
 from dotenv import load_dotenv
-import json
 import os
 
 load_dotenv()
 
-class State(TypedDict):
-    messages: list
+# ----------------------------
+# State
+# ----------------------------
 
-def memory_node(state):
-    return {
-        "messages": state["messages"]
-    }
+class State(TypedDict):
+    messages: Annotated[list, add_messages]
+
+
+# ----------------------------
+# LLM
+# ----------------------------
 
 llm = ChatOpenAI(
-    model="openai/gpt-4o-mini",
+    model="gpt-4o-mini",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1"
 )
 
-def llm_node(state):
-    response = llm.invoke(state["messages"])
 
-    return {
-        "messages": state["messages"] + [response]
-    }
+# ----------------------------
+# Structured Profile Schema
+# ----------------------------
 
-def extract_profile(profile, message):
+class Profile(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+    occupation: Optional[str] = None
+    income: Optional[str] = None
+    city: Optional[str] = None
+
+
+# ----------------------------
+# Tools
+# ----------------------------
+
+def extract_profile(
+    current_profile: str,
+    message: str
+) -> str:
+    """
+    Extract profile information from a user message.
+    """
 
     prompt = f"""
     Current Profile:
-    {profile}
+    {current_profile}
 
-    Message:
+    New Message:
     {message}
 
-    Extract profile information.
+    Extract and update profile information.
+    """
 
-    Return ONLY raw JSON.
+    structured_llm = llm.with_structured_output(Profile)
 
-    DO NOT use markdown.
-    DO NOT use ```json.
-    DO NOT explain anything.
+    profile = structured_llm.invoke(prompt)
 
-    Fields:
-    name
-    age
-    occupation
-    income
-    city
+    return profile.model_dump()
 
 
+def story_teller(
+    profile: str,
+    concept: str
+) -> str:
+    """
+    Explain a concept using examples from the user's profile.
+    """
+
+    prompt = f"""
+    You are a financial educator.
+
+    User Profile:
+    {profile}
+
+    Concept:
+    {concept}
+
+    Explain the concept using examples relevant to the user's profile.
+    Keep it simple and practical.
     """
 
     response = llm.invoke(prompt)
-    print("RAW RESPONSE:")
-    print(response.content)
-    return json.loads(response.content)
+
+    return response.content
+
+
+tools = [
+    extract_profile,
+    story_teller
+]
+
+llm_with_tools = llm.bind_tools(tools)
+
+
+# ----------------------------
+# Nodes
+# ----------------------------
+
+def memory_node(state: State):
+    return state
+
+
+def llm_node(state: State):
+
+    response = llm_with_tools.invoke(
+        state["messages"]
+    )
+
+    return {
+        "messages": [response]
+    }
+
+
+# ----------------------------
+# Graph
+# ----------------------------
 
 builder = StateGraph(State)
 
 builder.add_node("memory", memory_node)
 builder.add_node("llm", llm_node)
+builder.add_node("tools", ToolNode(tools))
 
 builder.add_edge(START, "memory")
 builder.add_edge("memory", "llm")
-builder.add_edge("llm", END)
+
+builder.add_conditional_edges(
+    "llm",
+    tools_condition,
+    {
+        "tools": "tools",
+        END: END,
+    },
+)
+
+builder.add_edge("tools", "llm")
 
 graph = builder.compile()
+
+
+
