@@ -6,6 +6,10 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from filters import build_filters
+from user_service import get_user
+from scraper import search_schemes
 
 from dotenv import load_dotenv
 import os
@@ -97,9 +101,29 @@ def story_teller(
 
     return response.content
 
+@tool
+def find_schemes(user_id: str):
+    """
+    Find government schemes for a user.
+    """
+
+    user = get_user(user_id)
+
+    filters = build_filters(user)
+
+    schemes = search_schemes(filters)
+
+    return [
+        {
+            "name": s["fields"]["schemeName"],
+            "description": s["fields"]["briefDescription"]
+        }
+        for s in schemes[:10]
+    ]
 
 tools = [
     extract_profile,
+    find_schemes,
     story_teller
 ]
 
