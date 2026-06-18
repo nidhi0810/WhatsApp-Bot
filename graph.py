@@ -39,12 +39,45 @@ llm = ChatOpenAI(
 # Structured Profile Schema
 # ----------------------------
 
+
 class Profile(BaseModel):
     name: Optional[str] = None
+
+    # Basic Details
     age: Optional[int] = None
-    occupation: Optional[str] = None
-    income: Optional[str] = None
+    gender: Optional[str] = None
     city: Optional[str] = None
+    state: Optional[str] = None
+    income: Optional[str] = None
+
+    # Education / Employment
+    occupation: Optional[str] = None
+    employmentStatus: Optional[str] = None
+    isStudent: Optional[bool] = None
+
+    # Social
+    caste: Optional[str] = None
+    minority: Optional[bool] = None
+
+    # Residence
+    residence: Optional[str] = None
+
+    # Family
+    maritalStatus: Optional[str] = None
+
+    # Financial
+    isBpl: Optional[bool] = None
+    dbtScheme: Optional[bool] = None
+
+    # Government / Special Categories
+    isGovEmployee: Optional[bool] = None
+    disability: Optional[bool] = None
+    disabilityPercentage: Optional[int] = None
+    isEconomicDistress: Optional[bool] = None
+
+    # Scheme Preferences
+    schemeCategory: Optional[str] = None
+    benefitTypes: Optional[str] = None
 
 
 # ----------------------------
