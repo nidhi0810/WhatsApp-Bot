@@ -87,10 +87,11 @@ class Profile(BaseModel):
 def extract_profile(
     current_profile: str,
     message: str
-) -> str:
+) -> dict:
     """
     Extract profile information from a user message.
     """
+    print("EXTRACT PROFILE CALLED")
 
     prompt = f"""
     Current Profile:
@@ -99,16 +100,81 @@ def extract_profile(
     New Message:
     {message}
 
-    Extract and update profile information.
+    Extract only the profile fields that can be inferred from the new message.
+    Leave unknown fields as null.
     """
 
     structured_llm = llm.with_structured_output(Profile)
 
     profile = structured_llm.invoke(prompt)
 
-    return profile.model_dump()
+    # Remove None values so we don't overwrite existing data
+    updates = {
+        k: v
+        for k, v in profile.model_dump().items()
+        if v is not None
+    }
 
+    return updates
 
+@tool
+def find_schemes(
+    user_id: str,
+    current_profile: str,
+    message: str
+):
+    """
+    Find government schemes for a user.
+    """
+
+    print("=" * 50)
+    print("FIND SCHEMES CALLED")
+    print("USER ID =", user_id)
+
+    # Get current user from DB
+    user = get_user(user_id)
+
+    print("USER FROM DB =", user)
+
+    # Extract latest profile updates
+    updates = extract_profile(
+        current_profile=current_profile,
+        message=message
+    )
+
+    print("UPDATES =", updates)
+
+    # Merge updates into user profile
+    merged_user = {
+        **user,
+        **updates
+    }
+
+    print("MERGED USER =", merged_user)
+
+    # Optional: persist merged profile
+    users.update_one(
+        {"userId": user_id},
+        {"$set": updates}
+    )
+
+    filters = build_filters(merged_user)
+
+    print("FILTERS =", filters)
+
+    schemes = search_schemes(filters)
+
+    print("SCHEMES FOUND =", len(schemes))
+
+    return [
+        {
+            "name": scheme["fields"].get("schemeName"),
+            "description": scheme["fields"].get("briefDescription")
+        }
+        for scheme in schemes[:10]
+    ]
+
+    
 def story_teller(
     profile: str,
     concept: str
@@ -133,26 +199,6 @@ def story_teller(
     response = llm.invoke(prompt)
 
     return response.content
-
-@tool
-def find_schemes(user_id: str):
-    """
-    Find government schemes for a user.
-    """
-
-    user = get_user(user_id)
-
-    filters = build_filters(user)
-
-    schemes = search_schemes(filters)
-
-    return [
-        {
-            "name": s["fields"]["schemeName"],
-            "description": s["fields"]["briefDescription"]
-        }
-        for s in schemes[:10]
-    ]
 
 tools = [
     extract_profile,
