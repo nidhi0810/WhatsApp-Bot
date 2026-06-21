@@ -1,6 +1,8 @@
 import requests
 import json
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 API_URL = "https://api.myscheme.gov.in/search/v6/schemes"
 

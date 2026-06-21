@@ -1,4 +1,5 @@
 from typing import TypedDict, Annotated, Optional
+
 from pydantic import BaseModel
 
 from langgraph.graph import StateGraph, START, END
@@ -7,8 +8,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
+from langchain_core.messages import SystemMessage
+
 from filters import build_filters
-from user_service import get_user
+from user_service import get_user, update_user
 from scraper import search_schemes
 
 from dotenv import load_dotenv
@@ -22,8 +25,8 @@ load_dotenv()
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
-
-
+    user_id: str
+    profile: dict
 # ----------------------------
 # LLM
 # ----------------------------
@@ -33,7 +36,6 @@ llm = ChatOpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1"
 )
-
 
 # ----------------------------
 # Structured Profile Schema
@@ -85,106 +87,65 @@ class Profile(BaseModel):
 # ----------------------------
 
 def extract_profile(
-    current_profile: str,
+    current_profile: dict,
     message: str
 ) -> dict:
-    """
-    Extract profile information from a user message.
-    """
-    print("EXTRACT PROFILE CALLED")
 
     prompt = f"""
     Current Profile:
     {current_profile}
 
-    New Message:
+    Latest User Message:
     {message}
 
-    Extract only the profile fields that can be inferred from the new message.
-    Leave unknown fields as null.
+    Extract ONLY profile information explicitly
+    mentioned in the latest message.
+
+    Rules:
+    - Never guess.
+    - Never infer.
+    - Only update fields mentioned.
+    - Return null for fields not mentioned.
+    - If user corrects information, use latest value.
     """
 
     structured_llm = llm.with_structured_output(Profile)
 
     profile = structured_llm.invoke(prompt)
 
-    # Remove None values so we don't overwrite existing data
-    updates = {
-        k: v
-        for k, v in profile.model_dump().items()
-        if v is not None
-    }
+    return profile.model_dump(exclude_none=True)
 
-    return updates
 
 @tool
-def find_schemes(
-    user_id: str,
-    current_profile: str,
-    message: str
-):
+def find_schemes(profile: dict):
     """
-    Find government schemes for a user.
+    Find government schemes matching a profile.
     """
 
-    print("=" * 50)
-    print("FIND SCHEMES CALLED")
-    print("USER ID =", user_id)
-
-    # Get current user from DB
-    user = get_user(user_id)
-
-    print("USER FROM DB =", user)
-
-    # Extract latest profile updates
-    updates = extract_profile(
-        current_profile=current_profile,
-        message=message
-    )
-
-    print("UPDATES =", updates)
-
-    # Merge updates into user profile
-    merged_user = {
-        **user,
-        **updates
-    }
-
-    print("MERGED USER =", merged_user)
-
-    # Optional: persist merged profile
-    users.update_one(
-        {"userId": user_id},
-        {"$set": updates}
-    )
-
-    filters = build_filters(merged_user)
-
-    print("FILTERS =", filters)
+    filters = build_filters(profile)
 
     schemes = search_schemes(filters)
 
-    print("SCHEMES FOUND =", len(schemes))
-
     return [
         {
-            "name": scheme["fields"].get("schemeName"),
-            "description": scheme["fields"].get("briefDescription")
+            "name": s["fields"].get("schemeName"),
+            "description": s["fields"].get("briefDescription")
         }
-        for scheme in schemes[:10]
+        for s in schemes[:10]
     ]
 
-    
+
+@tool
 def story_teller(
     profile: str,
     concept: str
 ) -> str:
     """
-    Explain a concept using examples from the user's profile.
+    Explain a financial concept using examples tailored to the user's profile.
     """
 
     prompt = f"""
-    You are a financial educator.
+    You are a friendly financial educator.
 
     User Profile:
     {profile}
@@ -192,16 +153,18 @@ def story_teller(
     Concept:
     {concept}
 
-    Explain the concept using examples relevant to the user's profile.
-    Keep it simple and practical.
+    Explain the concept using examples relevant
+    to the user's situation.
+
+    Keep the explanation under 300 words.
     """
 
     response = llm.invoke(prompt)
 
     return response.content
 
+
 tools = [
-    extract_profile,
     find_schemes,
     story_teller
 ]
@@ -214,19 +177,76 @@ llm_with_tools = llm.bind_tools(tools)
 # ----------------------------
 
 def memory_node(state: State):
-    return state
 
+    user = get_user(state["user_id"])
+
+    return {
+        "profile": user
+    }
+
+
+
+def profile_node(state: State):
+
+    last_message = state["messages"][-1].content
+
+    updates = extract_profile(
+        current_profile=state["profile"],
+        message=last_message
+    )
+
+    merged_profile = {
+        **state["profile"],
+        **updates
+    }
+
+    return {
+        "profile": merged_profile
+    }
+
+def save_profile_node(state: State):
+
+    updates = {
+        k: v
+        for k, v in state["profile"].items()
+        if k not in ["_id"]
+    }
+
+    update_user(
+        state["user_id"],
+        updates
+    )
+
+    return {}
 
 def llm_node(state: State):
 
-    response = llm_with_tools.invoke(
-        state["messages"]
-    )
+    system = f"""
+    You are a helpful government scheme assistant.
+
+    User Profile:
+    {state['profile']}
+
+    When users ask:
+    - scheme recommendations
+    - government benefits
+    - eligibility
+    - subsidies
+    - scholarships
+
+    use the find_schemes tool.
+
+    Pass the profile shown above to the tool.
+    """
+
+    response = llm_with_tools.invoke([
+        SystemMessage(content=system),
+        *state["messages"]
+    ])
 
     return {
         "messages": [response]
     }
-
 
 # ----------------------------
 # Graph
@@ -235,11 +255,15 @@ def llm_node(state: State):
 builder = StateGraph(State)
 
 builder.add_node("memory", memory_node)
+builder.add_node("profile", profile_node)
+builder.add_node("save_profile", save_profile_node)
 builder.add_node("llm", llm_node)
 builder.add_node("tools", ToolNode(tools))
 
 builder.add_edge(START, "memory")
-builder.add_edge("memory", "llm")
+builder.add_edge("memory", "profile")
+builder.add_edge("profile", "save_profile")
+builder.add_edge("save_profile", "llm")
 
 builder.add_conditional_edges(
     "llm",
@@ -247,7 +271,7 @@ builder.add_conditional_edges(
     {
         "tools": "tools",
         END: END,
-    },
+    }
 )
 
 builder.add_edge("tools", "llm")

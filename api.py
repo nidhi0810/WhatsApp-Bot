@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
 async def chat(req: ChatRequest):
 
     result = graph.invoke({
+        "user_id": req.user_id,
         "messages": [
             HumanMessage(content=req.message)
         ]
